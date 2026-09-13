@@ -100,7 +100,7 @@ func loop(configPath string) {
 			body.Token = node.Key
 			body.CommandResult = pending[node.NodeID]
 
-			reply, err := client.ReportMosvpnStatus(body)
+			reply, err := client.ReportMosvpnStatus(body, node.MosvpnKey)
 			if err != nil {
 				log.WithField("err", err).Debug("report: send failed")
 				continue
@@ -111,6 +111,17 @@ func loop(configPath string) {
 			for _, cmd := range reply.Commands {
 				result := control.Apply(control.Command(cmd), configPath, node.NodeID)
 				pending[node.NodeID] = &result
+				if !result.RestartAfter {
+					continue
+				}
+				// This process is about to be replaced, so send the result now
+				// instead of leaving it for a beat that will never run here.
+				body.CommandResult = &result
+				if _, err := client.ReportMosvpnStatus(body, node.MosvpnKey); err != nil {
+					log.WithField("err", err).Warn("report: could not deliver command result before restart")
+				}
+				control.Restart()
+				return
 			}
 		}
 	}

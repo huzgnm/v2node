@@ -23,12 +23,25 @@ type Command struct {
 	Ref     string `json:"ref"`
 }
 
-// Result is what the agent reports back on its next beat.
+// Result is what the agent reports back.
 type Result struct {
 	ID     string `json:"id"`
 	Type   string `json:"type"`
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
+	// Set when this process must be replaced to finish the command. The caller
+	// has to deliver the result BEFORE restarting: the next beat is 30 seconds
+	// away and this process does not live that long, so a result left for it is
+	// simply lost. That asymmetry is worse than it sounds — a failed update does
+	// not restart and so does report, meaning the operator only ever saw
+	// failures and never a success.
+	RestartAfter bool `json:"-"`
+}
+
+// Restart hands the process back to the service manager. Exported so the caller
+// can report first and restart second.
+func Restart() {
+	scheduleRestart()
 }
 
 // Apply runs one command and describes what happened. A command never aborts the
@@ -75,14 +88,12 @@ func Apply(cmd Command, configPath string, nodeID int) Result {
 		}
 		out.OK = true
 		out.Detail = "installed " + tag
-		// Answer first: the result is sent on the next beat, and this process is
-		// replaced a second later.
-		scheduleRestart()
+		out.RestartAfter = true
 
 	case "restart":
 		out.OK = true
 		out.Detail = "restarting"
-		scheduleRestart()
+		out.RestartAfter = true
 
 	default:
 		out.Detail = "unknown command"

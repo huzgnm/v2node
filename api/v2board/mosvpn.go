@@ -31,10 +31,11 @@ type MosvpnStatusReply struct {
 
 // ReportMosvpnStatus posts one telemetry beat and returns the commands the panel
 // handed back. A panel without the MosVPN module simply answers with none.
-func (c *Client) ReportMosvpnStatus(body any) (*MosvpnStatusReply, error) {
+func (c *Client) ReportMosvpnStatus(body any, nodeKey string) (*MosvpnStatusReply, error) {
 	reply := &MosvpnStatusReply{}
 	r, err := c.client.
 		R().
+		SetHeader("X-Mosvpn-Node-Key", nodeKey).
 		SetBody(body).
 		SetResult(reply).
 		ForceContentType("application/json").
