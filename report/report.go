@@ -7,17 +7,15 @@
 //	{ node_id, token, cpu, mem:{total,used}, swap:{total,used},
 //	  disk:{total,used}, net:{in_speed,out_speed} }
 //
-// Authentication is the same shared server token the node already uses to pull
-// its config, so nothing new has to be provisioned.
+// It goes through the same panel client the agent uses for every other call, so
+// authentication, retry and timeout are whatever the node is already configured
+// with, and nothing new has to be provisioned. The panel answers each beat with
+// the commands it wants this node to run, which is why the node needs no inbound
+// port.
 package report
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
 	"net"
-	"net/http"
-	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -25,13 +23,12 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 	psnet "github.com/shirou/gopsutil/v4/net"
 	log "github.com/sirupsen/logrus"
+	panel "github.com/wyx2685/v2node/api/v2board"
 	"github.com/wyx2685/v2node/conf"
+	"github.com/wyx2685/v2node/control"
 )
 
-const (
-	interval = 30 * time.Second
-	endpoint = "/api/v1/guest/mosvpn/node/stats"
-)
+const interval = 30 * time.Second
 
 type netSample struct {
 	at  time.Time
@@ -49,6 +46,8 @@ type netPair struct {
 	OutSpeed float64 `json:"out_speed"`
 }
 
+// commandResult is the outcome of the command the panel handed over on an
+// earlier beat; it rides along with the next report.
 type payload struct {
 	NodeID int      `json:"node_id"`
 	Token  string   `json:"token"`
@@ -58,9 +57,10 @@ type payload struct {
 	Disk   sizePair `json:"disk"`
 	Net    *netPair `json:"net,omitempty"`
 	// The panel is reached through a relay, so the address it sees a request
-	// come from is not this machine's. Report the egress address so the panel
-	// can pin its control calls to the real host instead of trusting DNS.
-	IP string `json:"ip,omitempty"`
+	// come from is not this machine's. Report the egress address so the admin
+	// list shows the real machine.
+	IP            string          `json:"ip,omitempty"`
+	CommandResult *control.Result `json:"command_result,omitempty"`
 }
 
 // Start begins reporting in the background. The config file is re-read every
@@ -73,6 +73,8 @@ func loop(configPath string) {
 	// Prime the CPU counter: without a first call the next reading is 0.
 	_, _ = cpu.Percent(0, false)
 	var prev *netSample
+	// Outcome of the last command, reported on the next beat.
+	pending := map[int]*control.Result{}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -89,10 +91,26 @@ func loop(configPath string) {
 			if node.APIHost == "" || node.Key == "" {
 				continue
 			}
+			client, err := panel.New(&node)
+			if err != nil {
+				log.WithField("err", err).Debug("report: client failed")
+				continue
+			}
 			body.NodeID = node.NodeID
 			body.Token = node.Key
-			if err := post(node.APIHost, body); err != nil {
+			body.CommandResult = pending[node.NodeID]
+
+			reply, err := client.ReportMosvpnStatus(body)
+			if err != nil {
 				log.WithField("err", err).Debug("report: send failed")
+				continue
+			}
+			// The panel accepted the result, so stop repeating it.
+			delete(pending, node.NodeID)
+
+			for _, cmd := range reply.Commands {
+				result := control.Apply(control.Command(cmd), configPath, node.NodeID)
+				pending[node.NodeID] = &result
 			}
 		}
 	}
@@ -162,28 +180,4 @@ func collect(prev *netSample) (payload, *netSample) {
 		}
 	}
 	return out, current
-}
-
-func post(apiHost string, body payload) error {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	url := strings.TrimRight(apiHost, "/") + endpoint
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("stats http %d", resp.StatusCode)
-	}
-	return nil
 }

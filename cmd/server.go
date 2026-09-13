@@ -12,7 +12,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/wyx2685/v2node/conf"
-	"github.com/wyx2685/v2node/control"
 	"github.com/wyx2685/v2node/core"
 	"github.com/wyx2685/v2node/limiter"
 	"github.com/wyx2685/v2node/node"
@@ -106,10 +105,9 @@ func serverHandle(_ *cobra.Command, _ []string) {
 		return
 	}
 	log.Info("Nodes started")
-	// MosVPN: the panel -> agent control channel (opt-in per node via the
-	// Control block) and the host telemetry the admin node table shows.
-	ctrl := control.Start(c.NodeConfigs, config, version)
-	defer ctrl.Close()
+	// MosVPN: the telemetry the admin node table shows, and the channel the panel
+	// uses to hand this node work — the reply to each report carries any pending
+	// command, so the node needs no inbound port.
 	report.Start(config)
 	if watch {
 		// On file change, just signal reload; do not run reload concurrently here

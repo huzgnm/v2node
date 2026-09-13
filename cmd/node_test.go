@@ -9,15 +9,13 @@ import (
 )
 
 // add runs the merge with the flags a panel install command would pass.
-func add(t *testing.T, path string, nodeID int, apiKey, secret string) error {
+func add(t *testing.T, path string, nodeID int, apiKey, _ string) error {
 	t.Helper()
 	addConfigPath = path
 	addAPIHost = "https://mosvpn.com"
 	addNodeID = nodeID
 	addAPIKey = apiKey
 	addTimeout = 15
-	addControlListn = "0.0.0.0:8443"
-	addControlSecre = secret
 
 	return nodeAddHandle(nil, nil)
 }
@@ -133,7 +131,7 @@ func TestKeepsTheConfigFileMode(t *testing.T) {
 func TestReRunKeepsHandTunedFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	existing := `{"Nodes":[{"NodeID":61,"ApiKey":"OLD","Timeout":90,"CustomSetting":"quan-trong",` +
-		`"Control":{"Listen":"127.0.0.1:9999","Secret":"old","Insecure":true}}]}`
+		`"RetryCount":7}]}`
 	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -152,12 +150,8 @@ func TestReRunKeepsHandTunedFields(t *testing.T) {
 	if node["ApiKey"] != "NEW" {
 		t.Fatalf("ApiKey must be updated, got %v", node["ApiKey"])
 	}
-	control := node["Control"].(map[string]any)
-	if control["Secret"] != "s61" {
-		t.Fatalf("the new secret must win, got %v", control["Secret"])
-	}
-	if control["Insecure"] != true {
-		t.Fatalf("other Control keys must survive, got %v", control["Insecure"])
+	if node["RetryCount"].(float64) != 7 {
+		t.Fatalf("other keys must survive, got %v", node["RetryCount"])
 	}
 }
 
@@ -174,12 +168,11 @@ func TestAddsASecondNodeWithoutLosingTheFirst(t *testing.T) {
 	if len(nodes) != 2 {
 		t.Fatalf("want 2 nodes, got %d", len(nodes))
 	}
-	secrets := map[string]bool{}
+	ids := map[float64]bool{}
 	for _, entry := range nodes {
-		node := entry.(map[string]any)
-		secrets[node["Control"].(map[string]any)["Secret"].(string)] = true
+		ids[entry.(map[string]any)["NodeID"].(float64)] = true
 	}
-	if !secrets["s61"] || !secrets["s62"] {
-		t.Fatalf("each node keeps its own secret, got %v", secrets)
+	if !ids[61] || !ids[62] {
+		t.Fatalf("both nodes must be present, got %v", ids)
 	}
 }

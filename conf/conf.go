@@ -22,27 +22,12 @@ type LogConfig struct {
 	Access string `mapstructure:"Access"`
 }
 
-type ControlConfig struct {
-	Listen string `mapstructure:"Listen"`
-	Secret string `mapstructure:"Secret"`
-	// Optional override. Left empty, the control listener reuses the certificate
-	// this agent already holds for the node, so nothing has to be configured;
-	// set them only to serve the channel with a different certificate.
-	CertFile string `mapstructure:"CertFile"`
-	KeyFile  string `mapstructure:"KeyFile"`
-	// Serve plain http instead of https. Local test benches only: the panel
-	// refuses a plain-http endpoint in production because the reconfig body
-	// carries the ApiKey.
-	Insecure bool `mapstructure:"Insecure"`
-}
-
 type NodeConfig struct {
-	APIHost    string         `mapstructure:"ApiHost"`
-	NodeID     int            `mapstructure:"NodeID"`
-	Key        string         `mapstructure:"ApiKey"`
-	Timeout    int            `mapstructure:"Timeout"`
-	RetryCount *int           `mapstructure:"RetryCount"`
-	Control    *ControlConfig `mapstructure:"Control"`
+	APIHost    string `mapstructure:"ApiHost"`
+	NodeID     int    `mapstructure:"NodeID"`
+	Key        string `mapstructure:"ApiKey"`
+	Timeout    int    `mapstructure:"Timeout"`
+	RetryCount *int   `mapstructure:"RetryCount"`
 }
 
 func New() *Conf {
