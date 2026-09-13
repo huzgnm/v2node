@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -56,6 +57,10 @@ type payload struct {
 	Swap   sizePair `json:"swap"`
 	Disk   sizePair `json:"disk"`
 	Net    *netPair `json:"net,omitempty"`
+	// The panel is reached through a relay, so the address it sees a request
+	// come from is not this machine's. Report the egress address so the panel
+	// can pin its control calls to the real host instead of trusting DNS.
+	IP string `json:"ip,omitempty"`
 }
 
 // Start begins reporting in the background. The config file is re-read every
@@ -93,8 +98,31 @@ func loop(configPath string) {
 	}
 }
 
+// egressIP is this host's own address on the route out, read from the kernel's
+// routing choice rather than from an external "what is my IP" service: no
+// network traffic leaves the box, and nothing depends on a third party being up.
+// A UDP "connection" performs no handshake, so the peer address is never
+// contacted. On a NAT'd host this is a private address; the panel drops
+// anything that is not public, so such a node simply reports none.
+func egressIP() string {
+	conn, err := net.Dial("udp", "1.1.1.1:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || addr.IP == nil {
+		return ""
+	}
+	if addr.IP.IsLoopback() || addr.IP.IsPrivate() || addr.IP.IsLinkLocalUnicast() {
+		return ""
+	}
+	return addr.IP.String()
+}
+
 func collect(prev *netSample) (payload, *netSample) {
 	var out payload
+	out.IP = egressIP()
 
 	if values, err := cpu.Percent(0, false); err == nil && len(values) > 0 {
 		out.CPU = values[0]
