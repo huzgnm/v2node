@@ -22,12 +22,23 @@ type LogConfig struct {
 	Access string `mapstructure:"Access"`
 }
 
+type ControlConfig struct {
+	Listen string `mapstructure:"Listen"`
+	Secret string `mapstructure:"Secret"`
+	// The panel refuses a plain-http control endpoint in production because the
+	// reconfig body carries the ApiKey. Point these at the node's existing
+	// certificate to serve the channel over TLS.
+	CertFile string `mapstructure:"CertFile"`
+	KeyFile  string `mapstructure:"KeyFile"`
+}
+
 type NodeConfig struct {
-	APIHost    string `mapstructure:"ApiHost"`
-	NodeID     int    `mapstructure:"NodeID"`
-	Key        string `mapstructure:"ApiKey"`
-	Timeout    int    `mapstructure:"Timeout"`
-	RetryCount *int   `mapstructure:"RetryCount"`
+	APIHost    string         `mapstructure:"ApiHost"`
+	NodeID     int            `mapstructure:"NodeID"`
+	Key        string         `mapstructure:"ApiKey"`
+	Timeout    int            `mapstructure:"Timeout"`
+	RetryCount *int           `mapstructure:"RetryCount"`
+	Control    *ControlConfig `mapstructure:"Control"`
 }
 
 func New() *Conf {
