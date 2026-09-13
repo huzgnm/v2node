@@ -40,6 +40,10 @@ VERSION_ARG=""
 API_HOST_ARG=""
 NODE_ID_ARG=""
 API_KEY_ARG=""
+# MosVPN control channel. Passed in by the panel so the panel already knows the
+# secret and the operator has nothing to copy back; generated here when absent.
+CONTROL_SECRET_ARG=""
+CONTROL_LISTEN_ARG="0.0.0.0:8443"
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -50,8 +54,12 @@ parse_args() {
                 NODE_ID_ARG="$2"; shift 2 ;;
             --api-key)
                 API_KEY_ARG="$2"; shift 2 ;;
+            --control-secret)
+                CONTROL_SECRET_ARG="$2"; shift 2 ;;
+            --control-listen)
+                CONTROL_LISTEN_ARG="$2"; shift 2 ;;
             -h|--help)
-                echo "用法: $0 [版本号] [--api-host URL] [--node-id ID] [--api-key KEY]"
+                echo "用法: $0 [版本号] [--api-host URL] [--node-id ID] [--api-key KEY] [--control-secret SECRET] [--control-listen ADDR]"
                 exit 0 ;;
             --*)
                 echo "未知参数: $1"; exit 1 ;;
@@ -223,10 +231,16 @@ generate_v2node_config() {
         local node_id="$2"
         local api_key="$3"
 
-        # Secret for the MosVPN panel -> agent control channel. Generated here so
-        # every node gets its own; the operator pastes it into the panel once.
-        local control_secret
-        control_secret=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        # Secret for the MosVPN panel -> agent control channel. The panel passes
+        # it in with --control-secret, so it already holds the secret and the
+        # operator copies nothing back. Generated here only when the script is
+        # run by hand, and then it has to be pasted into the panel.
+        local control_secret="${CONTROL_SECRET_ARG}"
+        local control_from_panel=1
+        if [[ -z "${control_secret}" ]]; then
+            control_from_panel=0
+            control_secret=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        fi
 
         mkdir -p /etc/v2node >/dev/null 2>&1
         cat > /etc/v2node/config.json <<EOF
@@ -243,7 +257,7 @@ generate_v2node_config() {
             "ApiKey": "${api_key}",
             "Timeout": 15,
             "Control": {
-                "Listen": "0.0.0.0:8443",
+                "Listen": "${CONTROL_LISTEN_ARG}",
                 "Secret": "${control_secret}"
             }
         }
@@ -251,12 +265,19 @@ generate_v2node_config() {
 }
 EOF
         echo -e "${green}V2node 配置文件生成完成,正在重新启动服务${plain}"
-        echo -e "${green}=== MosVPN control endpoint (dán vào panel) ===${plain}"
-        echo -e "  URL:    https://<domain-cua-node>:8443"
-        echo -e "  Secret: ${control_secret}"
-        echo -e "${green}Panel: Module -> Quản lý node nhanh -> ô control của node này.${plain}"
-        echo -e "${green}Cert: dùng luôn cert node tự xin theo cài đặt TLS ở panel, không cần khai gì.${plain}"
-        echo -e "${green}Dùng domain của node trong URL (đúng domain trên cert), đừng dùng IP.${plain}"
+        if [[ "${control_from_panel}" == "1" ]]; then
+            # The panel generated this secret and already stored it, so there is
+            # nothing to copy and nothing worth printing to a shared terminal.
+            echo -e "${green}MosVPN control: đã bật trên ${CONTROL_LISTEN_ARG} bằng secret panel cấp, không cần dán gì vào panel.${plain}"
+        else
+            echo -e "${green}=== MosVPN control endpoint (dán vào panel) ===${plain}"
+            echo -e "  Listen: ${CONTROL_LISTEN_ARG}"
+            echo -e "  Secret: ${control_secret}"
+            echo -e "${green}Panel: Module -> Quản lý node nhanh -> ô control của node này.${plain}"
+            echo -e "${green}Cert: dùng luôn cert node tự xin theo cài đặt TLS ở panel, không cần khai gì.${plain}"
+            echo -e "${green}URL ghi domain trên cert của node, đừng ghi IP.${plain}"
+            echo -e "${green}Lần sau lấy lệnh cài ở panel thì khỏi phải dán tay bước này.${plain}"
+        fi
         if [[ x"${release}" == x"alpine" ]]; then
             service v2node restart
         else
