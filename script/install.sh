@@ -394,10 +394,33 @@ EOF
             first_install=true
         fi
     else
+        # A config already exists. One machine commonly serves several nodes, and
+        # the panel hands out one command per node, so merge this node in instead
+        # of ignoring the arguments: overwriting would drop the nodes already
+        # installed here, and ignoring them made the second install a silent
+        # no-op. Re-running the same command just updates that node.
+        if [[ -n "$API_HOST_ARG" && -n "$NODE_ID_ARG" && -n "$API_KEY_ARG" ]]; then
+            local add_secret="${CONTROL_SECRET_ARG}"
+            if [[ -z "${add_secret}" ]]; then
+                add_secret=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+                echo -e "${green}Secret control cho node ${NODE_ID_ARG} (dán vào panel): ${add_secret}${plain}"
+            fi
+            if /usr/local/v2node/v2node node add \
+                --config /etc/v2node/config.json \
+                --api-host "$API_HOST_ARG" \
+                --node-id "$NODE_ID_ARG" \
+                --api-key "$API_KEY_ARG" \
+                --control-listen "$CONTROL_LISTEN_ARG" \
+                --control-secret "${add_secret}"; then
+                echo -e "${green}已将节点 ${NODE_ID_ARG} 合并到 /etc/v2node/config.json${plain}"
+            else
+                echo -e "${red}Không gộp được node vào config, giữ nguyên file cũ.${plain}"
+            fi
+        fi
         if [[ x"${release}" == x"alpine" ]]; then
-            service v2node start
+            service v2node restart
         else
-            systemctl start v2node
+            systemctl restart v2node
         fi
         sleep 2
         check_status

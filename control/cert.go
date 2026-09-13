@@ -2,6 +2,7 @@ package control
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"os"
@@ -45,11 +46,14 @@ type certResolver struct {
 	nodeIDs  []int
 	dirs     []string
 
-	mu      sync.Mutex
-	loaded  *tls.Certificate
-	from    certPair
+	mu     sync.Mutex
+	cache  map[certPair]cachedCert
+	warned bool
+}
+
+type cachedCert struct {
+	cert    *tls.Certificate
 	modTime time.Time
-	warned  bool
 }
 
 func newCertResolver(explicit []certPair, nodeIDs []int, dirs []string) *certResolver {
@@ -57,10 +61,21 @@ func newCertResolver(explicit []certPair, nodeIDs []int, dirs []string) *certRes
 	return &certResolver{explicit: explicit, nodeIDs: nodeIDs, dirs: dirs}
 }
 
-func (r *certResolver) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+func (r *certResolver) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// One agent commonly serves several nodes from one config, and each node has
+	// its own certificate, so the listener holds several. Pick the one that
+	// matches the name the panel asked for; answering with another node's
+	// certificate would fail verification on the panel side for every node but
+	// one.
+	requested := ""
+	if hello != nil {
+		requested = hello.ServerName
+	}
+
+	var first *tls.Certificate
 	for _, pair := range r.candidates() {
 		info, err := os.Stat(pair.certFile)
 		if err != nil {
@@ -69,17 +84,30 @@ func (r *certResolver) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 		if _, err := os.Stat(pair.keyFile); err != nil {
 			continue
 		}
-		if r.loaded != nil && r.from == pair && r.modTime.Equal(info.ModTime()) {
-			return r.loaded, nil
-		}
-		cert, err := tls.LoadX509KeyPair(pair.certFile, pair.keyFile)
-		if err != nil {
-			log.WithField("err", err).Warnf("control: cannot use %s", pair.certFile)
+		cert := r.load(pair, info.ModTime())
+		if cert == nil {
 			continue
 		}
-		r.loaded, r.from, r.modTime, r.warned = &cert, pair, info.ModTime(), false
-		log.Infof("control: serving TLS with %s", pair.certFile)
-		return &cert, nil
+		if first == nil {
+			first = cert
+		}
+		if requested == "" {
+			break
+		}
+		if leaf := leafOf(cert); leaf != nil && leaf.VerifyHostname(requested) == nil {
+			r.warned = false
+			return cert, nil
+		}
+	}
+	if first != nil {
+		// No certificate names what was asked for. Answer with one anyway: the
+		// panel decides whether to trust it, and a handshake failure here would
+		// read as "unreachable" instead of a name mismatch.
+		if requested != "" {
+			log.Warnf("control: no certificate for %q, offering the first one found", requested)
+		}
+		r.warned = false
+		return first, nil
 	}
 
 	if !r.warned {
@@ -91,6 +119,45 @@ func (r *certResolver) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 		)
 	}
 	return nil, errors.New("control: no certificate available")
+}
+
+// load returns the parsed pair, reusing the cached copy while the file on disk
+// has not moved. A renewal rewrites the file, which changes its mtime, so the
+// new certificate is picked up without a restart.
+func (r *certResolver) load(pair certPair, modTime time.Time) *tls.Certificate {
+	if cached, ok := r.cache[pair]; ok && cached.modTime.Equal(modTime) {
+		return cached.cert
+	}
+	cert, err := tls.LoadX509KeyPair(pair.certFile, pair.keyFile)
+	if err != nil {
+		log.WithField("err", err).Warnf("control: cannot use %s", pair.certFile)
+		return nil
+	}
+	if r.cache == nil {
+		r.cache = make(map[certPair]cachedCert)
+	}
+	r.cache[pair] = cachedCert{cert: &cert, modTime: modTime}
+	log.Infof("control: loaded certificate %s", pair.certFile)
+
+	return &cert
+}
+
+// leafOf parses the leaf once and keeps it on the certificate, so matching a
+// hostname does not re-parse on every handshake.
+func leafOf(cert *tls.Certificate) *x509.Certificate {
+	if cert.Leaf != nil {
+		return cert.Leaf
+	}
+	if len(cert.Certificate) == 0 {
+		return nil
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil
+	}
+	cert.Leaf = leaf
+
+	return leaf
 }
 
 // candidates lists the certificates to try, operator-configured first. Only
