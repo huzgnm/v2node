@@ -244,9 +244,7 @@ generate_v2node_config() {
             "Timeout": 15,
             "Control": {
                 "Listen": "0.0.0.0:8443",
-                "Secret": "${control_secret}",
-                "CertFile": "",
-                "KeyFile": ""
+                "Secret": "${control_secret}"
             }
         }
     ]
@@ -254,11 +252,11 @@ generate_v2node_config() {
 EOF
         echo -e "${green}V2node 配置文件生成完成,正在重新启动服务${plain}"
         echo -e "${green}=== MosVPN control endpoint (dán vào panel) ===${plain}"
-        echo -e "  URL:    https://<domain-hoac-IP-cua-node>:8443"
+        echo -e "  URL:    https://<domain-cua-node>:8443"
         echo -e "  Secret: ${control_secret}"
         echo -e "${green}Panel: Module -> Quản lý node nhanh -> ô control của node này.${plain}"
-        echo -e "${green}Panel chỉ nhận https. Đặt CertFile/KeyFile trong khối Control ở${plain}"
-        echo -e "${green}/etc/v2node/config.json trỏ tới cert của node, rồi restart v2node.${plain}"
+        echo -e "${green}Cert: dùng luôn cert node tự xin theo cài đặt TLS ở panel, không cần khai gì.${plain}"
+        echo -e "${green}Dùng domain của node trong URL (đúng domain trên cert), đừng dùng IP.${plain}"
         if [[ x"${release}" == x"alpine" ]]; then
             service v2node restart
         else

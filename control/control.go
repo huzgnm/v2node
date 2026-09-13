@@ -17,6 +17,7 @@ package control
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -48,27 +49,41 @@ type handler struct {
 // Start launches one listener per distinct Control.Listen found in the node
 // configs. Nodes without a Control block are simply not reachable, which keeps
 // the channel opt-in.
+//
+// The channel is https by default and needs no certificate configuration: the
+// listener reuses the certificate the node already holds (see cert.go).
 func Start(nodes []conf.NodeConfig, configPath, version string) *Manager {
-	groups := make(map[string]map[int]string)
-	tls := make(map[string][2]string)
+	type group struct {
+		secrets  map[int]string
+		explicit []certPair
+		ids      []int
+		insecure bool
+	}
+	groups := make(map[string]*group)
 	for i := range nodes {
 		c := nodes[i].Control
 		if c == nil || c.Listen == "" || c.Secret == "" {
 			continue
 		}
-		if groups[c.Listen] == nil {
-			groups[c.Listen] = make(map[int]string)
+		g := groups[c.Listen]
+		if g == nil {
+			g = &group{secrets: make(map[int]string)}
+			groups[c.Listen] = g
 		}
-		groups[c.Listen][nodes[i].NodeID] = c.Secret
+		g.secrets[nodes[i].NodeID] = c.Secret
+		g.ids = append(g.ids, nodes[i].NodeID)
 		if c.CertFile != "" && c.KeyFile != "" {
-			tls[c.Listen] = [2]string{c.CertFile, c.KeyFile}
+			g.explicit = append(g.explicit, certPair{certFile: c.CertFile, keyFile: c.KeyFile})
 		}
+		// One node asking for plain http opens the whole listener, because the
+		// listener is shared; it exists for local test benches only.
+		g.insecure = g.insecure || c.Insecure
 	}
 
 	m := &Manager{}
-	for listen, secrets := range groups {
+	for listen, g := range groups {
 		h := &handler{
-			secrets:    secrets,
+			secrets:    g.secrets,
 			configPath: configPath,
 			version:    version,
 			startedAt:  time.Now(),
@@ -80,21 +95,29 @@ func Start(nodes []conf.NodeConfig, configPath, version string) *Manager {
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
 		}
+		if !g.insecure {
+			resolver := newCertResolver(g.explicit, g.ids, certDirs(configPath))
+			srv.TLSConfig = &tls.Config{
+				MinVersion:     tls.VersionTLS12,
+				GetCertificate: resolver.GetCertificate,
+			}
+		}
 		m.servers = append(m.servers, srv)
-		pair, secure := tls[listen]
-		go func(s *http.Server, addr string, pair [2]string, secure bool) {
+
+		go func(s *http.Server, addr string, insecure bool) {
 			var err error
-			if secure {
-				log.Infof("control: listening on https://%s", addr)
-				err = s.ListenAndServeTLS(pair[0], pair[1])
-			} else {
+			if insecure {
 				log.Warnf("control: listening on http://%s without TLS; the panel only accepts https in production", addr)
 				err = s.ListenAndServe()
+			} else {
+				log.Infof("control: listening on https://%s", addr)
+				// Empty file names: the certificate comes from TLSConfig.
+				err = s.ListenAndServeTLS("", "")
 			}
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.WithField("err", err).Error("control: listener stopped")
 			}
-		}(srv, listen, pair, secure)
+		}(srv, listen, g.insecure)
 	}
 	return m
 }
