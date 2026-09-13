@@ -40,6 +40,10 @@ VERSION_ARG=""
 API_HOST_ARG=""
 NODE_ID_ARG=""
 API_KEY_ARG=""
+# MosVPN control channel. Passed in by the panel so the panel already knows the
+# secret and the operator has nothing to copy back; generated here when absent.
+CONTROL_SECRET_ARG=""
+CONTROL_LISTEN_ARG="0.0.0.0:8443"
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -50,8 +54,12 @@ parse_args() {
                 NODE_ID_ARG="$2"; shift 2 ;;
             --api-key)
                 API_KEY_ARG="$2"; shift 2 ;;
+            --control-secret)
+                CONTROL_SECRET_ARG="$2"; shift 2 ;;
+            --control-listen)
+                CONTROL_LISTEN_ARG="$2"; shift 2 ;;
             -h|--help)
-                echo "用法: $0 [版本号] [--api-host URL] [--node-id ID] [--api-key KEY]"
+                echo "用法: $0 [版本号] [--api-host URL] [--node-id ID] [--api-key KEY] [--control-secret SECRET] [--control-listen ADDR]"
                 exit 0 ;;
             --*)
                 echo "未知参数: $1"; exit 1 ;;
@@ -223,6 +231,17 @@ generate_v2node_config() {
         local node_id="$2"
         local api_key="$3"
 
+        # Secret for the MosVPN panel -> agent control channel. The panel passes
+        # it in with --control-secret, so it already holds the secret and the
+        # operator copies nothing back. Generated here only when the script is
+        # run by hand, and then it has to be pasted into the panel.
+        local control_secret="${CONTROL_SECRET_ARG}"
+        local control_from_panel=1
+        if [[ -z "${control_secret}" ]]; then
+            control_from_panel=0
+            control_secret=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        fi
+
         mkdir -p /etc/v2node >/dev/null 2>&1
         cat > /etc/v2node/config.json <<EOF
 {
@@ -236,12 +255,29 @@ generate_v2node_config() {
             "ApiHost": "${api_host}",
             "NodeID": ${node_id},
             "ApiKey": "${api_key}",
-            "Timeout": 15
+            "Timeout": 15,
+            "Control": {
+                "Listen": "${CONTROL_LISTEN_ARG}",
+                "Secret": "${control_secret}"
+            }
         }
     ]
 }
 EOF
         echo -e "${green}V2node 配置文件生成完成,正在重新启动服务${plain}"
+        if [[ "${control_from_panel}" == "1" ]]; then
+            # The panel generated this secret and already stored it, so there is
+            # nothing to copy and nothing worth printing to a shared terminal.
+            echo -e "${green}MosVPN control: đã bật trên ${CONTROL_LISTEN_ARG} bằng secret panel cấp, không cần dán gì vào panel.${plain}"
+        else
+            echo -e "${green}=== MosVPN control endpoint (dán vào panel) ===${plain}"
+            echo -e "  Listen: ${CONTROL_LISTEN_ARG}"
+            echo -e "  Secret: ${control_secret}"
+            echo -e "${green}Panel: Module -> Quản lý node nhanh -> ô control của node này.${plain}"
+            echo -e "${green}Cert: dùng luôn cert node tự xin theo cài đặt TLS ở panel, không cần khai gì.${plain}"
+            echo -e "${green}URL ghi domain trên cert của node, đừng ghi IP.${plain}"
+            echo -e "${green}Lần sau lấy lệnh cài ở panel thì khỏi phải dán tay bước này.${plain}"
+        fi
         if [[ x"${release}" == x"alpine" ]]; then
             service v2node restart
         else
@@ -267,13 +303,13 @@ install_v2node() {
     cd /usr/local/v2node/
 
     if  [[ -z "$version_param" ]] ; then
-        last_version=$(curl -Ls "https://api.github.com/repos/wyx2685/v2node/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        last_version=$(curl -Ls "https://api.github.com/repos/huzgnm/v2node/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
         if [[ ! -n "$last_version" ]]; then
             echo -e "${red}检测 v2node 版本失败，可能是超出 Github API 限制，请稍后再试，或手动指定 v2node 版本安装${plain}"
             exit 1
         fi
         echo -e "${green}检测到最新版本：${last_version}，开始安装...${plain}"
-        url="https://github.com/wyx2685/v2node/releases/download/${last_version}/v2node-linux-${arch}.zip"
+        url="https://github.com/huzgnm/v2node/releases/download/${last_version}/v2node-linux-${arch}.zip"
         curl -sL "$url" | pv -s 30M -W -N "下载进度" > /usr/local/v2node/v2node-linux.zip
         if [[ $? -ne 0 ]]; then
             echo -e "${red}下载 v2node 失败，请确保你的服务器能够下载 Github 的文件${plain}"
@@ -281,7 +317,7 @@ install_v2node() {
         fi
     else
     last_version=$version_param
-        url="https://github.com/wyx2685/v2node/releases/download/${last_version}/v2node-linux-${arch}.zip"
+        url="https://github.com/huzgnm/v2node/releases/download/${last_version}/v2node-linux-${arch}.zip"
         curl -sL "$url" | pv -s 30M -W -N "下载进度" > /usr/local/v2node/v2node-linux.zip
         if [[ $? -ne 0 ]]; then
             echo -e "${red}下载 v2node $1 失败，请确保此版本存在${plain}"
@@ -358,10 +394,33 @@ EOF
             first_install=true
         fi
     else
+        # A config already exists. One machine commonly serves several nodes, and
+        # the panel hands out one command per node, so merge this node in instead
+        # of ignoring the arguments: overwriting would drop the nodes already
+        # installed here, and ignoring them made the second install a silent
+        # no-op. Re-running the same command just updates that node.
+        if [[ -n "$API_HOST_ARG" && -n "$NODE_ID_ARG" && -n "$API_KEY_ARG" ]]; then
+            local add_secret="${CONTROL_SECRET_ARG}"
+            if [[ -z "${add_secret}" ]]; then
+                add_secret=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+                echo -e "${green}Secret control cho node ${NODE_ID_ARG} (dán vào panel): ${add_secret}${plain}"
+            fi
+            if /usr/local/v2node/v2node node add \
+                --config /etc/v2node/config.json \
+                --api-host "$API_HOST_ARG" \
+                --node-id "$NODE_ID_ARG" \
+                --api-key "$API_KEY_ARG" \
+                --control-listen "$CONTROL_LISTEN_ARG" \
+                --control-secret "${add_secret}"; then
+                echo -e "${green}已将节点 ${NODE_ID_ARG} 合并到 /etc/v2node/config.json${plain}"
+            else
+                echo -e "${red}Không gộp được node vào config, giữ nguyên file cũ.${plain}"
+            fi
+        fi
         if [[ x"${release}" == x"alpine" ]]; then
-            service v2node start
+            service v2node restart
         else
-            systemctl start v2node
+            systemctl restart v2node
         fi
         sleep 2
         check_status
@@ -375,7 +434,7 @@ EOF
     fi
 
 
-    curl -o /usr/bin/v2node -Ls https://raw.githubusercontent.com/wyx2685/v2node/main/script/v2node.sh
+    curl -o /usr/bin/v2node -Ls https://raw.githubusercontent.com/huzgnm/v2node/main/script/v2node.sh
     chmod +x /usr/bin/v2node
 
     cd $cur_dir
