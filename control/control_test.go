@@ -122,3 +122,29 @@ func TestUpdateRefIsWhitelisted(t *testing.T) {
 		t.Fatal("valid refs must pass the whitelist")
 	}
 }
+
+// FK-5: a listener is shared by every node naming the same Listen address, so one
+// node's bench switch must not put the other nodes' traffic on the wire in clear.
+func TestPlaintextOnlyWhenEveryNodeOnTheListenerAsksAndItIsLoopback(t *testing.T) {
+	cases := []struct {
+		name        string
+		listen      string
+		secureIDs   []int
+		insecureIDs []int
+		want        bool
+	}{
+		{"nobody asked", "127.0.0.1:8443", []int{61, 62}, nil, false},
+		{"one of eight asked", "0.0.0.0:8443", []int{62, 63, 84, 91, 114, 115, 119}, []int{61}, false},
+		{"all asked but public bind", "0.0.0.0:8443", nil, []int{61}, false},
+		{"all asked on loopback", "127.0.0.1:8443", nil, []int{125}, true},
+		{"all asked on localhost", "localhost:8443", nil, []int{125}, true},
+		{"all asked on ipv6 loopback", "[::1]:8443", nil, []int{125}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := plaintextAllowed(tc.listen, tc.secureIDs, tc.insecureIDs); got != tc.want {
+				t.Fatalf("want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}

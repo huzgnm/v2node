@@ -22,8 +22,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -54,10 +56,11 @@ type handler struct {
 // listener reuses the certificate the node already holds (see cert.go).
 func Start(nodes []conf.NodeConfig, configPath, version string) *Manager {
 	type group struct {
-		secrets  map[int]string
-		explicit []certPair
-		ids      []int
-		insecure bool
+		secrets     map[int]string
+		explicit    []certPair
+		ids         []int
+		secureIDs   []int
+		insecureIDs []int
 	}
 	groups := make(map[string]*group)
 	for i := range nodes {
@@ -75,9 +78,11 @@ func Start(nodes []conf.NodeConfig, configPath, version string) *Manager {
 		if c.CertFile != "" && c.KeyFile != "" {
 			g.explicit = append(g.explicit, certPair{certFile: c.CertFile, keyFile: c.KeyFile})
 		}
-		// One node asking for plain http opens the whole listener, because the
-		// listener is shared; it exists for local test benches only.
-		g.insecure = g.insecure || c.Insecure
+		if c.Insecure {
+			g.insecureIDs = append(g.insecureIDs, nodes[i].NodeID)
+		} else {
+			g.secureIDs = append(g.secureIDs, nodes[i].NodeID)
+		}
 	}
 
 	m := &Manager{}
@@ -95,7 +100,8 @@ func Start(nodes []conf.NodeConfig, configPath, version string) *Manager {
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
 		}
-		if !g.insecure {
+		insecure := plaintextAllowed(listen, g.secureIDs, g.insecureIDs)
+		if !insecure {
 			resolver := newCertResolver(g.explicit, g.ids, certDirs(configPath))
 			srv.TLSConfig = &tls.Config{
 				MinVersion:     tls.VersionTLS12,
@@ -117,9 +123,54 @@ func Start(nodes []conf.NodeConfig, configPath, version string) *Manager {
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.WithField("err", err).Error("control: listener stopped")
 			}
-		}(srv, listen, g.insecure)
+		}(srv, listen, insecure)
 	}
 	return m
+}
+
+// plaintextAllowed decides whether one listener may serve plain http.
+//
+// Insecure is a bench switch, but a listener is shared by every node that names
+// the same Listen address: on a machine running eight nodes, honouring one node's
+// Insecure would put the ApiKey and all eight secrets on the wire in the clear
+// and break the seven nodes the panel calls over https. So it takes effect only
+// when every node on the listener asks for it AND the listener is bound to
+// loopback, which is what a bench looks like. Anything else stays on TLS and says
+// why, because quietly downgrading is the failure nobody notices.
+func plaintextAllowed(listen string, secureIDs, insecureIDs []int) bool {
+	if len(insecureIDs) == 0 {
+		return false
+	}
+	if len(secureIDs) > 0 {
+		log.Errorf(
+			"control: ignoring Insecure on %s: node(s) %s asked for plain http but node(s) %s did not; serving TLS",
+			listen, joinInts(insecureIDs), joinInts(secureIDs),
+		)
+		return false
+	}
+	if !isLoopbackListen(listen) {
+		log.Errorf(
+			"control: ignoring Insecure on %s: plain http is only allowed on a loopback address; serving TLS",
+			listen,
+		)
+		return false
+	}
+
+	return true
+}
+
+func isLoopbackListen(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		host = listen
+	}
+	host = strings.Trim(host, "[]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+
+	return ip != nil && ip.IsLoopback()
 }
 
 func (m *Manager) Close() {
