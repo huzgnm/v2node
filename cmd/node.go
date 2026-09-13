@@ -20,6 +20,7 @@ var (
 	addNodeID     int
 	addAPIKey     string
 	addTimeout    int
+	addReportKey  string
 )
 
 // The mode a freshly created config gets: it holds the panel ApiKey, so it is
@@ -45,6 +46,7 @@ func init() {
 	f.IntVar(&addNodeID, "node-id", 0, "node id")
 	f.StringVar(&addAPIKey, "api-key", "", "panel api key")
 	f.IntVar(&addTimeout, "timeout", 15, "request timeout")
+	f.StringVar(&addReportKey, "report-key", "", "MosVPN per-node heartbeat key")
 
 	nodeCommand.AddCommand(&nodeAddCommand)
 	command.AddCommand(&nodeCommand)
@@ -172,6 +174,9 @@ func applyNode(node map[string]any) {
 	node["ApiHost"] = addAPIHost
 	node["NodeID"] = addNodeID
 	node["ApiKey"] = addAPIKey
+	if addReportKey != "" {
+		node["MosvpnKey"] = addReportKey
+	}
 	if _, ok := node["Timeout"]; !ok {
 		node["Timeout"] = addTimeout
 	}

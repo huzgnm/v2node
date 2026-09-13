@@ -40,6 +40,9 @@ VERSION_ARG=""
 API_HOST_ARG=""
 NODE_ID_ARG=""
 API_KEY_ARG=""
+# Per-node key for the MosVPN heartbeat, handed over by the panel's install
+# command so the panel can tell which node is calling.
+REPORT_KEY_ARG=""
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -50,8 +53,10 @@ parse_args() {
                 NODE_ID_ARG="$2"; shift 2 ;;
             --api-key)
                 API_KEY_ARG="$2"; shift 2 ;;
+            --report-key)
+                REPORT_KEY_ARG="$2"; shift 2 ;;
             -h|--help)
-                echo "用法: $0 [版本号] [--api-host URL] [--node-id ID] [--api-key KEY]"
+                echo "用法: $0 [版本号] [--api-host URL] [--node-id ID] [--api-key KEY] [--report-key KEY]"
                 exit 0 ;;
             --*)
                 echo "未知参数: $1"; exit 1 ;;
@@ -236,6 +241,7 @@ generate_v2node_config() {
             "ApiHost": "${api_host}",
             "NodeID": ${node_id},
             "ApiKey": "${api_key}",
+            "MosvpnKey": "${REPORT_KEY_ARG}",
             "Timeout": 15
         }
     ]
@@ -369,7 +375,8 @@ EOF
                 --config /etc/v2node/config.json \
                 --api-host "$API_HOST_ARG" \
                 --node-id "$NODE_ID_ARG" \
-                --api-key "$API_KEY_ARG"; then
+                --api-key "$API_KEY_ARG" \
+                --report-key "$REPORT_KEY_ARG"; then
                 echo -e "${green}已将节点 ${NODE_ID_ARG} 合并到 /etc/v2node/config.json${plain}"
             else
                 echo -e "${red}Không gộp được node vào config, giữ nguyên file cũ.${plain}"

@@ -28,6 +28,9 @@ type NodeConfig struct {
 	Key        string `mapstructure:"ApiKey"`
 	Timeout    int    `mapstructure:"Timeout"`
 	RetryCount *int   `mapstructure:"RetryCount"`
+	// Per-node key for the MosVPN heartbeat. The panel puts it in the install
+	// command; the shared ApiKey only proves "a node of this panel", not which.
+	MosvpnKey string `mapstructure:"MosvpnKey"`
 }
 
 func New() *Conf {
