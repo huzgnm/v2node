@@ -20,6 +20,12 @@ on:
   release:
     types: [published]
 
+# The release job attaches the built zips to the release, which the default
+# read-only workflow token cannot do: every upload came back "Resource not
+# accessible by integration" while the builds themselves passed.
+permissions:
+  contents: write
+
 jobs:
 
   build:
