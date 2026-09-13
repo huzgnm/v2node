@@ -15,17 +15,15 @@ import (
 // existing file instead. It lives here, in the agent, because the installer
 // cannot assume jq or python exist on a fresh VPS.
 var (
-	addConfigPath   string
-	addAPIHost      string
-	addNodeID       int
-	addAPIKey       string
-	addTimeout      int
-	addControlListn string
-	addControlSecre string
+	addConfigPath string
+	addAPIHost    string
+	addNodeID     int
+	addAPIKey     string
+	addTimeout    int
 )
 
-// The mode a freshly created config gets: it holds the panel ApiKey and the
-// control secret, so it is not world-readable.
+// The mode a freshly created config gets: it holds the panel ApiKey, so it is
+// not world-readable.
 const newConfigMode = os.FileMode(0o600)
 
 var nodeCommand = cobra.Command{
@@ -47,8 +45,6 @@ func init() {
 	f.IntVar(&addNodeID, "node-id", 0, "node id")
 	f.StringVar(&addAPIKey, "api-key", "", "panel api key")
 	f.IntVar(&addTimeout, "timeout", 15, "request timeout")
-	f.StringVar(&addControlListn, "control-listen", "", "MosVPN control listen address")
-	f.StringVar(&addControlSecre, "control-secret", "", "MosVPN control secret")
 
 	nodeCommand.AddCommand(&nodeAddCommand)
 	command.AddCommand(&nodeCommand)
@@ -179,16 +175,4 @@ func applyNode(node map[string]any) {
 	if _, ok := node["Timeout"]; !ok {
 		node["Timeout"] = addTimeout
 	}
-	if addControlSecre == "" {
-		return
-	}
-	control, _ := node["Control"].(map[string]any)
-	if control == nil {
-		control = map[string]any{}
-	}
-	control["Secret"] = addControlSecre
-	if addControlListn != "" {
-		control["Listen"] = addControlListn
-	}
-	node["Control"] = control
 }
