@@ -5,7 +5,7 @@
 // already speaking that dialect needs no new serialiser:
 //
 //	{ node_id, token, cpu, mem:{total,used}, swap:{total,used},
-//	  disk:{total,used}, net:{in_speed,out_speed}, load1, uptime }
+//	  disk:{total,used}, net:{in_speed,out_speed} }
 //
 // It goes through the same panel client the agent uses for every other call, so
 // authentication, retry and timeout are whatever the node is already configured
@@ -20,8 +20,6 @@ import (
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
-	"github.com/shirou/gopsutil/v4/host"
-	"github.com/shirou/gopsutil/v4/load"
 	"github.com/shirou/gopsutil/v4/mem"
 	psnet "github.com/shirou/gopsutil/v4/net"
 	log "github.com/sirupsen/logrus"
@@ -58,10 +56,6 @@ type payload struct {
 	Swap   sizePair `json:"swap"`
 	Disk   sizePair `json:"disk"`
 	Net    *netPair `json:"net,omitempty"`
-	// Pointers so a reading that failed is left out rather than sent as 0,
-	// which the admin table would show as a real value.
-	Load1  *float64 `json:"load1,omitempty"`
-	Uptime *uint64  `json:"uptime,omitempty"`
 	// The panel is reached through a relay, so the address it sees a request
 	// come from is not this machine's. Report the egress address so the admin
 	// list shows the real machine.
@@ -177,12 +171,6 @@ func collect(prev *netSample) (payload, *netSample) {
 	}
 	if d, err := disk.Usage("/"); err == nil && d != nil {
 		out.Disk = sizePair{Total: d.Total, Used: d.Used}
-	}
-	if l, err := load.Avg(); err == nil && l != nil {
-		out.Load1 = &l.Load1
-	}
-	if u, err := host.Uptime(); err == nil {
-		out.Uptime = &u
 	}
 
 	now := time.Now()
