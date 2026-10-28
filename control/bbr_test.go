@@ -97,7 +97,7 @@ func TestApplyBBRReadOnlyProc(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := applyBBR()
-	if err == nil || !strings.Contains(err.Error(), "switch to bbr") {
+	if err == nil || !strings.Contains(err.Error(), "switch to bbr") || !strings.Contains(err.Error(), "applies after reboot") {
 		t.Fatalf("err = %v", err)
 	}
 	// Still persisted, so a real host comes up with BBR after a reboot.

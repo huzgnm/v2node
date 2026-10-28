@@ -60,7 +60,10 @@ func applyBBR() (string, error) {
 		qdiscNote = ", qdisc unchanged: " + err.Error()
 	}
 	if err := os.WriteFile(procCongestion, []byte("bbr"), 0o644); err != nil {
-		return "", fmt.Errorf("switch to bbr: %w", err)
+		// Inside a container the saved file does nothing; on a real host it
+		// takes effect at the next boot. Say so, or the panel shows a plain
+		// failure for a machine that will in fact come up with BBR.
+		return "", fmt.Errorf("switch to bbr: %w; saved to %s, applies after reboot", err, bbrSysctlFile)
 	}
 	if now := readKnob(procCongestion); now != "bbr" {
 		return "", fmt.Errorf("kernel still reports %q after switching", now)
