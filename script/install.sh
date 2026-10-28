@@ -442,7 +442,33 @@ EOF
     fi
 }
 
+# MosVPN: turn on BBR for TCP-based nodes (vless/vmess/trojan/shadowsocks).
+# Writes the same file as the agent's "bbr" panel command. Never fails the
+# install: a kernel without BBR or a container with a read-only /proc just
+# keeps its current setting.
+enable_bbr() {
+    local conf=/etc/sysctl.d/99-mosvpn-bbr.conf
+    local avail=/proc/sys/net/ipv4/tcp_available_congestion_control
+    if ! grep -qw bbr "$avail" 2>/dev/null; then
+        modprobe tcp_bbr >/dev/null 2>&1
+    fi
+    if ! grep -qw bbr "$avail" 2>/dev/null; then
+        echo -e "${yellow}MosVPN: kernel không hỗ trợ BBR, giữ nguyên $(cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null).${plain}"
+        return 0
+    fi
+    mkdir -p /etc/sysctl.d
+    printf "net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n" > "$conf"
+    sysctl -p "$conf" >/dev/null 2>&1
+    if [[ "$(cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null)" == "bbr" ]]; then
+        echo -e "${green}MosVPN: đã bật BBR.${plain}"
+    else
+        echo -e "${yellow}MosVPN: đã ghi $conf nhưng chưa bật được BBR ngay (có thể là container), sẽ có hiệu lực sau khi khởi động lại máy.${plain}"
+    fi
+    return 0
+}
+
 parse_args "$@"
 echo -e "${green}开始安装${plain}"
 install_base
+enable_bbr
 install_v2node "$VERSION_ARG"

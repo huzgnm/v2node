@@ -95,6 +95,16 @@ func Apply(cmd Command, configPath string, nodeID int) Result {
 		out.Detail = "restarting"
 		out.RestartAfter = true
 
+	case "bbr":
+		detail, err := enableBBR()
+		if err != nil {
+			out.Detail = err.Error()
+			return out
+		}
+		// Takes effect for new connections at once; no restart.
+		out.OK = true
+		out.Detail = detail
+
 	default:
 		out.Detail = "unknown command"
 	}
