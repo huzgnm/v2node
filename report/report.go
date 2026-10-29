@@ -73,8 +73,10 @@ func loop(configPath string) {
 	// Prime the CPU counter: without a first call the next reading is 0.
 	_, _ = cpu.Percent(0, false)
 	var prev *netSample
-	// Outcome of the last command, reported on the next beat.
-	pending := map[int]*control.Result{}
+	// Results the panel has not accepted yet, per node, oldest first. A beat
+	// carries one, so a list keeps two commands from the same reply from
+	// overwriting each other's result.
+	pending := map[int][]*control.Result{}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -98,33 +100,70 @@ func loop(configPath string) {
 			}
 			body.NodeID = node.NodeID
 			body.Token = node.Key
-			body.CommandResult = pending[node.NodeID]
-
-			reply, err := client.ReportMosvpnStatus(body, node.MosvpnKey)
-			if err != nil {
-				log.WithField("err", err).Debug("report: send failed")
-				continue
-			}
-			// The panel accepted the result, so stop repeating it.
-			delete(pending, node.NodeID)
-
-			for _, cmd := range reply.Commands {
-				result := control.Apply(control.Command(cmd), configPath, node.NodeID)
-				pending[node.NodeID] = &result
-				if !result.RestartAfter {
-					continue
-				}
-				// This process is about to be replaced, so send the result now
-				// instead of leaving it for a beat that will never run here.
-				body.CommandResult = &result
-				if _, err := client.ReportMosvpnStatus(body, node.MosvpnKey); err != nil {
-					log.WithField("err", err).Warn("report: could not deliver command result before restart")
-				}
-				control.Restart()
+			if !beat(client, body, node, configPath, pending) {
 				return
 			}
 		}
 	}
+}
+
+// maxBeatsPerTick bounds the extra beats one tick may send, so a panel that
+// keeps queueing commands cannot hold the loop.
+const maxBeatsPerTick = 10
+
+// Swapped out in tests, which must not restart the test binary.
+var restartAgent = control.Restart
+
+// beat sends this tick's report for one node, then carries out whatever the
+// panel answered and reports each outcome straight away with an extra beat,
+// so the admin sees it in seconds instead of on the next tick 30 s later.
+// The panel hands a command over once and forgets it, so commands arriving on
+// those extra beats are carried out too. It returns false when the process is
+// about to be replaced.
+func beat(client *panel.Client, body payload, node conf.NodeConfig, configPath string, pending map[int][]*control.Result) bool {
+	id := node.NodeID
+	for sent := 0; sent < maxBeatsPerTick; sent++ {
+		if sent > 0 && len(pending[id]) == 0 {
+			return true
+		}
+		body.CommandResult = nil
+		if q := pending[id]; len(q) > 0 {
+			body.CommandResult = q[0]
+		}
+		reply, err := client.ReportMosvpnStatus(body, node.MosvpnKey)
+		if err != nil {
+			// Whatever is pending rides along with the next tick.
+			log.WithField("err", err).Debug("report: send failed")
+			return true
+		}
+		// The panel accepted the result, so stop repeating it.
+		if body.CommandResult != nil {
+			pending[id] = pending[id][1:]
+			if len(pending[id]) == 0 {
+				delete(pending, id)
+			}
+		}
+
+		for _, cmd := range reply.Commands {
+			result := control.Apply(control.Command(cmd), configPath, id)
+			pending[id] = append(pending[id], &result)
+			if !result.RestartAfter {
+				continue
+			}
+			// This process is about to be replaced, so deliver every result
+			// now instead of leaving them for a beat that will never run here.
+			for _, r := range pending[id] {
+				body.CommandResult = r
+				if _, err := client.ReportMosvpnStatus(body, node.MosvpnKey); err != nil {
+					log.WithField("err", err).Warn("report: could not deliver command result before restart")
+					break
+				}
+			}
+			restartAgent()
+			return false
+		}
+	}
+	return true
 }
 
 // egressIP is this host's own address on the route out, read from the kernel's
