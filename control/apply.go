@@ -81,7 +81,7 @@ func Apply(cmd Command, configPath string, nodeID int) Result {
 			out.Detail = "invalid ref"
 			return out
 		}
-		tag, err := selfUpdate(ref)
+		tag, err := selfUpdate(ref, configPath)
 		if err != nil {
 			out.Detail = err.Error()
 			return out

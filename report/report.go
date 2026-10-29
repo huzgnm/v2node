@@ -28,7 +28,10 @@ import (
 	"github.com/wyx2685/v2node/control"
 )
 
-const interval = 30 * time.Second
+const (
+	interval       = 30 * time.Second
+	autoCleanEvery = time.Hour
+)
 
 type netSample struct {
 	at  time.Time
@@ -78,9 +81,18 @@ func loop(configPath string) {
 	// overwriting each other's result.
 	pending := map[int][]*control.Result{}
 
+	// A full disk is what made an update fail on a node; clean up before it
+	// gets there, but not more than once an hour.
+	var lastClean time.Time
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
+		if time.Since(lastClean) >= autoCleanEvery {
+			if control.FreeSpaceIfLow(configPath) != "" {
+				lastClean = time.Now()
+			}
+		}
 		c := conf.New()
 		if err := c.LoadFromPath(configPath); err != nil {
 			log.WithField("err", err).Debug("report: reload config failed")

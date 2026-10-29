@@ -3,6 +3,7 @@ package control
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -122,9 +124,20 @@ func resolveTag(ref string) (string, error) {
 	return payload.TagName, nil
 }
 
+// Swapped out in tests.
+var (
+	executablePath = os.Executable
+	releaseURL     = func(tag, arch string) string {
+		return fmt.Sprintf("https://github.com/%s/releases/download/%s/v2node-linux-%s.zip", releaseRepo, tag, arch)
+	}
+)
+
 // selfUpdate downloads the release binary for ref and swaps it in. The caller
-// restarts the service afterwards so the new binary takes over.
-func selfUpdate(ref string) (string, error) {
+// restarts the service afterwards so the new binary takes over. Any failure
+// leaves the running binary untouched, so the node keeps serving and nothing
+// restarts. On success the returned detail mentions what was cleaned to make
+// room, if anything.
+func selfUpdate(ref, configPath string) (string, error) {
 	if !refPattern.MatchString(ref) {
 		return "", fmt.Errorf("invalid_ref")
 	}
@@ -143,9 +156,28 @@ func selfUpdate(ref string) (string, error) {
 		}
 	}
 
-	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/v2node-linux-%s.zip", releaseRepo, tag, arch)
-	log.Infof("control: downloading %s", url)
+	target, err := executablePath()
+	if err != nil {
+		return "", fmt.Errorf("locate binary: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		target = resolved
+	}
+	binDir := filepath.Dir(target)
 
+	// Room first: an earlier update that died half way may be what filled the
+	// disk, and none of this needs the network.
+	room := &roomMaker{configPath: configPath}
+	removeLeftovers(target, &room.cleaned)
+	var current uint64
+	if info, err := os.Stat(target); err == nil {
+		current = uint64(info.Size())
+	}
+	// The new binary is about the size of the running one; allow it to grow.
+	binEstimate := current + current/4
+
+	url := releaseURL(tag, arch)
+	log.Infof("control: downloading %s", url)
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -155,52 +187,62 @@ func selfUpdate(ref string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download: http %d", resp.StatusCode)
 	}
-
-	tmpDir, err := os.MkdirTemp("", "v2node-update")
-	if err != nil {
-		return "", fmt.Errorf("temp dir: %w", err)
+	zipSize := uint64(defaultZipSize)
+	if resp.ContentLength > 0 {
+		zipSize = uint64(resp.ContentLength)
 	}
-	defer os.RemoveAll(tmpDir)
 
-	zipPath := filepath.Join(tmpDir, "release.zip")
+	// The zip and the staged binary both live next to the binary, so one
+	// filesystem has to hold both at once.
+	if err := room.ensure(binDir, zipSize+binEstimate+updateMargin); err != nil {
+		return "", err
+	}
+	workDir := updateWorkDir(target)
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		return "", fmt.Errorf("work dir: %w", spaceHint(err, binDir))
+	}
+	defer os.RemoveAll(workDir)
+
+	zipPath := filepath.Join(workDir, "release.zip")
 	f, err := os.Create(zipPath)
 	if err != nil {
-		return "", fmt.Errorf("temp file: %w", err)
+		return "", fmt.Errorf("temp file: %w", spaceHint(err, binDir))
 	}
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
-		return "", fmt.Errorf("save download: %w", err)
+		return "", fmt.Errorf("save download: %w", spaceHint(err, binDir))
 	}
-	f.Close()
-
-	binary, err := extractBinary(zipPath, tmpDir)
-	if err != nil {
-		return "", err
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("save download: %w", spaceHint(err, binDir))
 	}
 
-	target, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("locate binary: %w", err)
-	}
-	if resolved, err := filepath.EvalSymlinks(target); err == nil {
-		target = resolved
-	}
+	// Write straight to <binary>.new: no second copy, so the update needs
+	// one binary's worth of space less than extracting to a temp dir first.
 	staged := target + ".new"
-	if err := copyFile(binary, staged, 0o755); err != nil {
-		return "", fmt.Errorf("stage binary: %w", err)
+	if err := extractBinary(zipPath, staged, func(size uint64) error {
+		return room.ensure(binDir, size+updateMargin)
+	}); err != nil {
+		_ = os.Remove(staged)
+		return "", err
 	}
 	if err := os.Rename(staged, target); err != nil {
 		_ = os.Remove(staged)
 		return "", fmt.Errorf("replace binary: %w", err)
 	}
 	log.Infof("control: installed %s at %s", tag, target)
+	if note := room.cleaned.String(); note != "" {
+		return tag + " (" + note + ")", nil
+	}
 	return tag, nil
 }
 
-func extractBinary(zipPath, destDir string) (string, error) {
+// extractBinary writes the zip's v2node entry to dest. fits is told the
+// uncompressed size first, so a full disk is reported as such before any
+// byte is written.
+func extractBinary(zipPath, dest string, fits func(size uint64) error) error {
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
-		return "", fmt.Errorf("open zip: %w", err)
+		return fmt.Errorf("open zip: %w", err)
 	}
 	defer reader.Close()
 
@@ -209,44 +251,39 @@ func extractBinary(zipPath, destDir string) (string, error) {
 		if name != "v2node" || entry.FileInfo().IsDir() {
 			continue
 		}
+		if err := fits(entry.UncompressedSize64); err != nil {
+			return err
+		}
 		rc, err := entry.Open()
 		if err != nil {
-			return "", fmt.Errorf("read zip entry: %w", err)
+			return fmt.Errorf("read zip entry: %w", err)
 		}
-		out := filepath.Join(destDir, "v2node")
-		dst, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+		defer rc.Close()
+		dst, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 		if err != nil {
-			rc.Close()
-			return "", fmt.Errorf("write binary: %w", err)
+			return fmt.Errorf("stage binary: %w", spaceHint(err, filepath.Dir(dest)))
 		}
 		// Bounded copy: a release binary is tens of megabytes, not gigabytes.
 		if _, err := io.Copy(dst, io.LimitReader(rc, 512<<20)); err != nil {
-			rc.Close()
 			dst.Close()
-			return "", fmt.Errorf("extract binary: %w", err)
+			return fmt.Errorf("stage binary: %w", spaceHint(err, filepath.Dir(dest)))
 		}
-		rc.Close()
-		dst.Close()
-		return out, nil
+		if err := dst.Close(); err != nil {
+			return fmt.Errorf("stage binary: %w", spaceHint(err, filepath.Dir(dest)))
+		}
+		return nil
 	}
-	return "", fmt.Errorf("zip has no v2node binary")
+	return fmt.Errorf("zip has no v2node binary")
 }
 
-func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
+// spaceHint turns a raw ENOSPC into the same readable message as the
+// up-front check, in case the disk filled up while the update ran.
+func spaceHint(err error, dir string) error {
+	if err == nil || !errors.Is(err, syscall.ENOSPC) {
 		return err
 	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
+	free, _ := freeBytes(dir)
+	return fmt.Errorf("disk full: %d MB free on %s; free space then retry", free/mb, dir)
 }
 
 // scheduleRestart hands the process back to the service manager shortly after
