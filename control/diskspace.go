@@ -64,7 +64,8 @@ type cleanup struct {
 }
 
 func (c *cleanup) add(what string, n uint64) {
-	if n == 0 {
+	// Below a megabyte it would read "0 MB", which says nothing.
+	if n < mb {
 		return
 	}
 	c.parts = append(c.parts, fmt.Sprintf("%s %d MB", what, n/mb))

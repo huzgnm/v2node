@@ -64,6 +64,9 @@ type payload struct {
 	// list shows the real machine.
 	IP            string          `json:"ip,omitempty"`
 	CommandResult *control.Result `json:"command_result,omitempty"`
+	// What the agent did on its own this tick, e.g. cleaning a nearly full
+	// disk, so the admin sees it in the panel and not only in the node's log.
+	Notice string `json:"notice,omitempty"`
 }
 
 // Start begins reporting in the background. The config file is re-read every
@@ -88,8 +91,9 @@ func loop(configPath string) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
+		notice := ""
 		if time.Since(lastClean) >= autoCleanEvery {
-			if control.FreeSpaceIfLow(configPath) != "" {
+			if notice = control.FreeSpaceIfLow(configPath); notice != "" {
 				lastClean = time.Now()
 			}
 		}
@@ -100,6 +104,8 @@ func loop(configPath string) {
 		}
 		body, next := collect(prev)
 		prev = next
+		// Every node on the machine carries it this tick: the disk is shared.
+		body.Notice = notice
 		if !tick(c.NodeConfigs, body, configPath, pending) {
 			return
 		}

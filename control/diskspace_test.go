@@ -276,3 +276,13 @@ func TestOwnLogFilesSkipsSpecialValues(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+// QA-9: a cleanup of less than a megabyte is not listed as "0 MB".
+func TestCleanupSkipsSubMegabyte(t *testing.T) {
+	var c cleanup
+	c.add("journal", 300<<10)
+	c.add("v2node logs", 5*mb)
+	if got := c.String(); got != "cleaned 5 MB: v2node logs 5 MB" {
+		t.Fatalf("got %q", got)
+	}
+}

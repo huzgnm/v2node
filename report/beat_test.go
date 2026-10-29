@@ -21,6 +21,7 @@ type fakePanel struct {
 	replies [][]panel.MosvpnCommand
 	fail    map[int]bool // beat index (0-based) to answer with 500
 	results []string     // per beat, "" when it carried no result
+	notices []string     // notice per beat
 	url     string
 }
 
@@ -30,6 +31,7 @@ func (f *fakePanel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	n := len(f.results)
 	var body struct {
 		CommandResult *control.Result `json:"command_result"`
+		Notice        string          `json:"notice"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	got := ""
@@ -40,6 +42,7 @@ func (f *fakePanel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	f.results = append(f.results, got)
+	f.notices = append(f.notices, body.Notice)
 	if f.fail[n] {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -201,4 +204,12 @@ func TestBeatsPerTickAreBounded(t *testing.T) {
 	if len(pending[7]) != 1 {
 		t.Fatalf("last result should wait for the next tick, pending = %d", len(pending[7]))
 	}
+}
+
+// QA-8: what the agent did on its own reaches the panel with the beat, extra
+// beats of the same tick included.
+func TestNoticeRidesAlongWithTheTick(t *testing.T) {
+	f := newPanel(t, []panel.MosvpnCommand{noop("a")})
+	tick([]conf.NodeConfig{nodeAt(f, 7)}, payload{Notice: "disk 97% full, cleaned 240 MB"}, "", map[int][]*control.Result{})
+	sameSeq(t, f.notices, "disk 97% full, cleaned 240 MB", "disk 97% full, cleaned 240 MB")
 }
