@@ -256,7 +256,7 @@ func TestFreeSpaceIfLow(t *testing.T) {
 
 	usedFraction = func(string) (float64, error) { return 0.97, nil }
 	note := FreeSpaceIfLow(h.config)
-	if note != "disk 97% full on "+h.dir+", cleaned 4 MB: old update files 4 MB; biggest: /var/log 7120 MB" {
+	if note != "disk 97% full on "+h.dir+"; biggest: /var/log 7120 MB; cleaned 4 MB: old update files 4 MB" {
 		t.Fatalf("note = %q", note)
 	}
 	if h.vacuums != 1 {
@@ -284,6 +284,23 @@ func TestCleanupSkipsSubMegabyte(t *testing.T) {
 	c.add("journal", 300<<10)
 	c.add("v2node logs", 5*mb)
 	if got := c.String(); got != "cleaned 5 MB: v2node logs 5 MB" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// The panel keeps 200 characters: what fills the disk must survive, the
+// cleaning breakdown is what gets cut.
+func TestNoticeKeepsBiggestWithinPanelLimit(t *testing.T) {
+	big := "biggest: /root/qa-fill 11405 MB, /home/someone.guest 3090 MB, /usr/lib 1082 MB"
+	done := "cleaned 1352 MB: old update files 40 MB, v2node logs 300 MB, journal 240 MB, old system logs 144 MB, syslog 512 MB, package cache 116 MB"
+	note := formatNotice(0.98, "/usr/local/v2node", big, done)
+	if len(note) > maxNotice {
+		t.Fatalf("notice is %d chars", len(note))
+	}
+	if !strings.HasPrefix(note, "disk 98% full on /usr/local/v2node; "+big+"; cleaned 1352 MB") {
+		t.Fatalf("got %q", note)
+	}
+	if got := formatNotice(0.96, "/usr/local/v2node", "", ""); got != "disk 96% full on /usr/local/v2node; nothing left to clean" {
 		t.Fatalf("got %q", got)
 	}
 }

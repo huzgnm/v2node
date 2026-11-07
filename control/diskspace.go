@@ -202,6 +202,9 @@ func ownLogFiles(configPath string) []string {
 // Disk use above this makes the agent clean up on its own.
 const autoCleanUsage = 0.95
 
+// The panel keeps this many characters of a notice.
+const maxNotice = 200
+
 // FreeSpaceIfLow cleans up when the disk holding the agent is nearly full:
 // leftovers of earlier updates, this agent's log files, the journal, rotated
 // and oversized system logs and the package cache. If the disk is still
@@ -222,18 +225,29 @@ func FreeSpaceIfLow(configPath string) string {
 	var c cleanup
 	removeLeftovers(target, &c)
 	freeLogs(configPath, dir, &c)
-	note := fmt.Sprintf("disk %.0f%% full on %s", used*100, dir)
-	if done := c.String(); done != "" {
-		note += ", " + done
-	} else {
-		note += ", nothing left to clean"
-	}
+	big := ""
 	if after, err := usedFraction(dir); err == nil && after >= autoCleanUsage {
-		if big := biggestDirsFunc(dir, 3); big != "" {
-			note += "; " + big
-		}
+		big = biggestDirsFunc(dir, 3)
 	}
+	note := formatNotice(used, dir, big, c.String())
 	log.Warn("control: " + note)
+	return note
+}
+
+// formatNotice puts what still fills the disk before the cleaning breakdown:
+// the panel keeps 200 characters and the breakdown is the part that can go.
+func formatNotice(used float64, dir, big, done string) string {
+	note := fmt.Sprintf("disk %.0f%% full on %s", used*100, dir)
+	if big != "" {
+		note += "; " + big
+	}
+	if done == "" {
+		done = "nothing left to clean"
+	}
+	note += "; " + done
+	if len(note) > maxNotice {
+		note = note[:maxNotice-3] + "..."
+	}
 	return note
 }
 
