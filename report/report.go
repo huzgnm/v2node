@@ -72,7 +72,11 @@ type payload struct {
 // Start begins reporting in the background. The config file is re-read every
 // cycle so a reconfig (new ApiHost/ApiKey) takes effect without a restart.
 func Start(configPath string) {
-	go loop(configPath)
+	go func() {
+		// Before the first beat: keep the node's own logs from filling the disk.
+		control.LimitNodeLogs()
+		loop(configPath)
+	}()
 }
 
 func loop(configPath string) {

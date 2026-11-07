@@ -46,13 +46,19 @@ type errDiskFull struct {
 	dir     string
 	free    uint64
 	need    uint64
-	cleaned string
+	cleaned uint64
+	biggest string
 }
 
+// The panel shows 200 characters, so the detail stays short: totals only,
+// and what fills the disk before the advice.
 func (e *errDiskFull) Error() string {
 	msg := fmt.Sprintf("disk full: %d MB free on %s, need ~%d MB", e.free/mb, e.dir, e.need/mb)
-	if e.cleaned != "" {
-		msg += " (" + e.cleaned + ")"
+	if e.cleaned >= mb {
+		msg += fmt.Sprintf(" (cleaned %d MB)", e.cleaned/mb)
+	}
+	if e.biggest != "" {
+		msg += "; " + e.biggest
 	}
 	return msg + "; free space then retry"
 }
@@ -116,7 +122,8 @@ func removeLeftovers(target string, c *cleanup) {
 }
 
 // roomMaker frees space when a write would not fit, at most once per update:
-// first this agent's own log files, then the systemd journal.
+// first this agent's own log files, then the journal, then system logs and
+// the package cache.
 type roomMaker struct {
 	configPath string
 	cleaned    cleanup
@@ -143,7 +150,7 @@ func (r *roomMaker) ensure(dir string, need uint64) error {
 			return nil
 		}
 	}
-	return &errDiskFull{dir: dir, free: free, need: need, cleaned: r.cleaned.String()}
+	return &errDiskFull{dir: dir, free: free, need: need, cleaned: r.cleaned.total, biggest: biggestDirsFunc(dir, 2)}
 }
 
 // freeLogs empties the log files named in this agent's own config and
@@ -168,6 +175,7 @@ func freeLogs(configPath, dir string, c *cleanup) {
 	if after, err := freeBytes(dir); err == nil && after > before+own {
 		c.add("journal", after-before-own)
 	}
+	freeSystemLogs(dir, c)
 }
 
 // ownLogFiles lists the Log.Output and Log.Access files from the agent's
@@ -195,8 +203,9 @@ func ownLogFiles(configPath string) []string {
 const autoCleanUsage = 0.95
 
 // FreeSpaceIfLow cleans up when the disk holding the agent is nearly full:
-// leftovers of earlier updates, this agent's log files and the journal. It
-// touches nothing else on the machine. Returns what was done, or "".
+// leftovers of earlier updates, this agent's log files, the journal, rotated
+// and oversized system logs and the package cache. If the disk is still
+// nearly full it names what fills it. Returns what was done, or "".
 func FreeSpaceIfLow(configPath string) string {
 	target, err := executablePath()
 	if err != nil {
@@ -217,7 +226,12 @@ func FreeSpaceIfLow(configPath string) string {
 	if done := c.String(); done != "" {
 		note += ", " + done
 	} else {
-		note += ", nothing of v2node's to clean"
+		note += ", nothing left to clean"
+	}
+	if after, err := usedFraction(dir); err == nil && after >= autoCleanUsage {
+		if big := biggestDirsFunc(dir, 3); big != "" {
+			note += "; " + big
+		}
 	}
 	log.Warn("control: " + note)
 	return note

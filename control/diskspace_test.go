@@ -52,6 +52,7 @@ func newUpdateHost(t *testing.T, release []byte, status int) *updateHost {
 	}))
 	t.Cleanup(srv.Close)
 
+	isolateSystem(t, filepath.Join(root, "var-log"))
 	oldExe, oldURL, oldFree, oldVac, oldRoots, oldUsed := executablePath, releaseURL, freeBytes, vacuumJournal, tempRoots, usedFraction
 	t.Cleanup(func() {
 		executablePath, releaseURL, freeBytes, vacuumJournal, tempRoots, usedFraction = oldExe, oldURL, oldFree, oldVac, oldRoots, oldUsed
@@ -255,7 +256,7 @@ func TestFreeSpaceIfLow(t *testing.T) {
 
 	usedFraction = func(string) (float64, error) { return 0.97, nil }
 	note := FreeSpaceIfLow(h.config)
-	if note != "disk 97% full on "+h.dir+", cleaned 4 MB: old update files 4 MB" {
+	if note != "disk 97% full on "+h.dir+", cleaned 4 MB: old update files 4 MB; biggest: /var/log 7120 MB" {
 		t.Fatalf("note = %q", note)
 	}
 	if h.vacuums != 1 {
